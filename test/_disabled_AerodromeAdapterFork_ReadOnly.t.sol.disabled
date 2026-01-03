@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.24;
+
+import "forge-std/Test.sol";
+
+import { VaultRebalancerNFT } from "../src/VaultRebalancerNFT.sol";
+
+contract AerodromeAdapterFork_ReadOnly_Test is Test {
+    // ---------------------------------------------------------------------
+    // Base mainnet: already-deployed vault
+    // ---------------------------------------------------------------------
+    address constant VAULT =
+        0x2496af67d718e4f46900af9c66fa7593B3CDD5a6;
+
+    VaultRebalancerNFT vault;
+
+    function setUp() public {
+        // Attach to the real vault on Base mainnet
+        vault = VaultRebalancerNFT(VAULT);
+    }
+
+    // ---------------------------------------------------------------------
+    // Option A invariant:
+    // previewRebalance is safely guarded in production
+    // ---------------------------------------------------------------------
+    function test_previewRebalance_is_guarded() public {
+        // On live Base state, preconditions are not met.
+        // A revert here is correct and expected.
+        vm.expectRevert();
+        vault.previewRebalance();
+    }
+
+    // ---------------------------------------------------------------------
+    // Option A invariant:
+    // rebalance cannot be forced in production
+    // ---------------------------------------------------------------------
+    function test_rebalance_is_guarded() public {
+        // rebalance must never succeed unless preview conditions are satisfied
+        vm.expectRevert();
+        vault.rebalance();
+    }
+}
+

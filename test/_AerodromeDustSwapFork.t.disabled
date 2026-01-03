@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "forge-std/Test.sol";
+import "../src/adapters/AerodromeDexAdapter.sol";
+
+interface IERC20 {
+    function balanceOf(address) external view returns (uint256);
+    function approve(address,uint256) external returns (bool);
+}
+
+/// @notice Forked integration test against Aerodrome on Base
+contract AerodromeDustSwapForkTest is Test {
+    // ------------------------------------------------------------
+    // Base mainnet constants
+    // ------------------------------------------------------------
+
+    address constant AERODROME_ROUTER =
+        0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43;
+
+    address constant WETH =
+        0x4200000000000000000000000000000000000006;
+
+    address constant USDC =
+        0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA;
+
+    function test_dust_swap_weth_to_usdc() public {
+        // Fork Base
+        vm.createSelectFork("https://mainnet.base.org");
+
+        uint256 dustAmount = 1e15; // 0.001 WETH
+        deal(WETH, address(this), dustAmount);
+
+        AerodromeDexAdapter adapter =
+            new AerodromeDexAdapter(AERODROME_ROUTER);
+
+        adapter.setSwapsEnabled(true);
+
+        IERC20(WETH).approve(address(adapter), dustAmount);
+
+        // -------- ROUTES DECLARED HERE --------
+        address;
+        routes[0] = WETH;
+        routes[1] = USDC;
+        // -------------------------------------
+
+        uint256 usdcBefore = IERC20(USDC).balanceOf(address(this));
+
+        uint256 amountOut = adapter.swap(
+            WETH,
+            USDC,
+            dustAmount,
+            0,
+            address(this),
+            abi.encode(routes)
+        );
+
+        uint256 usdcAfter = IERC20(USDC).balanceOf(address(this));
+
+        assertGt(amountOut, 0, "no output from swap");
+        assertGt(usdcAfter, usdcBefore, "USDC balance did not increase");
+    }
+}
