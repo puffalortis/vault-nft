@@ -2,12 +2,13 @@
 pragma solidity ^0.8.24;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { ExecutionVault } from "./ExecutionVault.sol";
 
 /**
  * @title VaultRebalancerNFT
- * @notice Rebalance coordinator with staged execution
- * @dev Starts stub-safe; real execution is admin-enabled
+ * @notice Rebalance coordinator with preview + gated execution
+ * @dev Public API is test-defined and must remain stable
  */
 contract VaultRebalancerNFT is Ownable {
 
@@ -17,35 +18,50 @@ contract VaultRebalancerNFT is Ownable {
 
     ExecutionVault public immutable executionVault;
 
-    /// @notice Enables real ExecutionVault calls when true
+    /// Execution gate (OFF by default)
     bool public liveExecutionEnabled = false;
+
+    /// Preview configuration
+    address public tokenA;
+    address public tokenB;
+
+    /// Target weight of tokenA in basis points
+    uint256 public targetWeightABps;
+
+    /// Minimum deviation required to rebalance (bps)
+    uint256 public minDeviationBps;
+
+    uint256 public constant BPS_DENOMINATOR = 10_000;
 
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Emitted whenever a rebalance is previewed
+    event PreviewConfigured(
+        address tokenA,
+        address tokenB,
+        uint256 targetWeightABps,
+        uint256 minDeviationBps
+    );
+
     event RebalancePreviewed(
         bool shouldRebalance,
         uint256 amount
     );
 
-    /// @notice Emitted when rebalance() is called (always)
-    event RebalanceCalled(
-        address indexed caller,
-        bool liveExecutionEnabled,
-        uint256 blockNumber,
-        uint256 timestamp
-    );
-
-    /// @notice Emitted when a live execution occurs
-    event RebalanceExecutedLive(
+    event RebalanceExecuted(
         address indexed executor,
         address tokenIn,
         address tokenOut,
         uint256 amountIn,
         uint256 expectedAmountOut,
-        uint256 actualAmountOut
+        uint256 blockNumber,
+        uint256 timestamp
+    );
+
+    event RebalanceCalled(
+        address indexed caller,
+        bool liveExecutionEnabled
     );
 
     /*//////////////////////////////////////////////////////////////
@@ -62,9 +78,30 @@ contract VaultRebalancerNFT is Ownable {
                                 ADMIN
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Enable or disable live ExecutionVault calls
     function setLiveExecutionEnabled(bool enabled) external onlyOwner {
         liveExecutionEnabled = enabled;
+    }
+
+    function configurePreview(
+        address _tokenA,
+        address _tokenB,
+        uint256 _targetWeightABps,
+        uint256 _minDeviationBps
+    ) external onlyOwner {
+        require(_targetWeightABps <= BPS_DENOMINATOR, "bad target");
+        require(_minDeviationBps <= BPS_DENOMINATOR, "bad deviation");
+
+        tokenA = _tokenA;
+        tokenB = _tokenB;
+        targetWeightABps = _targetWeightABps;
+        minDeviationBps = _minDeviationBps;
+
+        emit PreviewConfigured(
+            _tokenA,
+            _tokenB,
+            _targetWeightABps,
+            _minDeviationBps
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -73,67 +110,111 @@ contract VaultRebalancerNFT is Ownable {
 
     /**
      * @notice Preview whether a rebalance should occur
-     * @dev Stub-safe: real logic will be added later
+     * @dev MUST return exactly (bool, uint256) to satisfy tests
      */
     function previewRebalance()
-        external
+        public
         view
         returns (bool shouldRebalance, uint256 amount)
     {
-        shouldRebalance = false;
-        amount = 0;
+        if (
+            tokenA == address(0) ||
+            tokenB == address(0) ||
+            targetWeightABps == 0
+        ) {
+            return (false, 0);
+        }
+
+        uint256 balanceA =
+            IERC20(tokenA).balanceOf(address(executionVault));
+        uint256 balanceB =
+            IERC20(tokenB).balanceOf(address(executionVault));
+
+        uint256 total = balanceA + balanceB;
+        if (total == 0) {
+            return (false, 0);
+        }
+
+        uint256 currentWeightABps =
+            (balanceA * BPS_DENOMINATOR) / total;
+
+        uint256 deviation =
+            currentWeightABps > targetWeightABps
+                ? currentWeightABps - targetWeightABps
+                : targetWeightABps - currentWeightABps;
+
+        if (deviation < minDeviationBps) {
+            return (false, 0);
+        }
+
+        uint256 targetBalanceA =
+            (total * targetWeightABps) / BPS_DENOMINATOR;
+
+        if (balanceA > targetBalanceA) {
+            amount = balanceA - targetBalanceA;
+        } else {
+            amount = targetBalanceA - balanceA;
+        }
+
+        shouldRebalance = amount > 0;
     }
 
     /*//////////////////////////////////////////////////////////////
                                 ACTION
     //////////////////////////////////////////////////////////////*/
 
-    /**
-     * @notice Execute a rebalance
-     * @dev Safe in stub mode; live mode requires precomputed params
-     */
     function rebalance() external {
-        emit RebalanceCalled(
-            msg.sender,
-            liveExecutionEnabled,
-            block.number,
-            block.timestamp
-        );
+        emit RebalanceCalled(msg.sender, liveExecutionEnabled);
 
-        if (!liveExecutionEnabled) {
-            // Stub mode: no-op, idempotent, test-safe
+        (bool shouldRebalance, uint256 amount) = previewRebalance();
+
+        emit RebalancePreviewed(shouldRebalance, amount);
+
+        if (!shouldRebalance) {
             return;
         }
 
-        /**
-         * Live execution path (intentionally conservative):
-         * - Parameters must be precomputed off-chain
-         * - This avoids embedding strategy logic prematurely
-         *
-         * NOTE:
-         * These are placeholder values for now and will be
-         * wired to real strategy math in the next iteration.
-         */
-        address tokenIn = address(0);
-        address tokenOut = address(0);
-        uint256 amountIn = 0;
-        uint256 expectedAmountOut = 0;
+        if (!liveExecutionEnabled) {
+            // Preview-only mode
+            return;
+        }
 
-        uint256 actualAmountOut =
-            executionVault.executeSwap(
-                tokenIn,
-                tokenOut,
-                amountIn,
-                expectedAmountOut
-            );
+        // Determine direction again (no API leakage)
+        uint256 balanceA =
+            IERC20(tokenA).balanceOf(address(executionVault));
+        uint256 balanceB =
+            IERC20(tokenB).balanceOf(address(executionVault));
 
-        emit RebalanceExecutedLive(
+        address tokenIn;
+        address tokenOut;
+
+        uint256 targetBalanceA =
+            ((balanceA + balanceB) * targetWeightABps) / BPS_DENOMINATOR;
+
+        if (balanceA > targetBalanceA) {
+            tokenIn = tokenA;
+            tokenOut = tokenB;
+        } else {
+            tokenIn = tokenB;
+            tokenOut = tokenA;
+        }
+
+        // expectedAmountOut intentionally 0 for A-3
+        executionVault.executeSwap(
+            tokenIn,
+            tokenOut,
+            amount,
+            0
+        );
+
+        emit RebalanceExecuted(
             msg.sender,
             tokenIn,
             tokenOut,
-            amountIn,
-            expectedAmountOut,
-            actualAmountOut
+            amount,
+            0,
+            block.number,
+            block.timestamp
         );
     }
 }
