@@ -3,15 +3,20 @@ pragma solidity ^0.8.24;
 
 import { Test } from "forge-std/Test.sol";
 import { VaultRebalancerNFT } from "../src/VaultRebalancerNFT.sol";
+import { ExecutionVault } from "../src/ExecutionVault.sol";
+import { StubDexAdapter } from "../src/adapters/StubDexAdapter.sol";
 
 contract VaultRebalanceTest is Test {
     VaultRebalancerNFT vault;
+    ExecutionVault execVault;
+    StubDexAdapter adapter;
 
     function setUp() public {
-        vault = new VaultRebalancerNFT(
-            address(this),
-            address(0xBEEF) // stub execution vault
-        );
+        execVault = new ExecutionVault(200);
+        adapter = new StubDexAdapter();
+        execVault.setAdapter(address(adapter));
+        vault = new VaultRebalancerNFT(address(this), address(execVault));
+        execVault.setExecutor(address(vault), true);
     }
 
     function test_previewRebalance_doesNotRevert() public {
@@ -29,4 +34,3 @@ contract VaultRebalanceTest is Test {
         vault.rebalance();
     }
 }
-
